@@ -116,7 +116,7 @@ def _url_to_b64_string(image_source: str) -> str:
         raise ValueError(f"Unable to process the provided image source: {e}")
 
 
-class ChatNvcfNVIDIA(nvidia_ai_endpoints._NVIDIAClient, BaseChatModel):
+class ChatNVCF(nvidia_ai_endpoints._NVIDIAClient, BaseChatModel):
     """NVIDIA chat model.
 
     Example:
