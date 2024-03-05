@@ -281,6 +281,10 @@ class ChatOpenAPI(DefaultEnvMixin, BaseChatModel):
         SClient = cls.get_client_classes()[0]
         return [m.id for m in SClient(**new_kws).models.list().data]
     
+    def get_model_clients(self) -> list:
+        """Map the available models that can be invoked."""
+        return {model_name: self.bind(model=model_name) for model_name in self.available_models}
+
     @property
     def lc_attributes(self) -> Dict[str, Any]:
         attributes: Dict[str, Any] = {}

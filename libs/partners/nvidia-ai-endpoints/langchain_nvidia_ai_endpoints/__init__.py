@@ -39,7 +39,7 @@ embedding_output = embed_model.embed_query("Exploring AI capabilities.")
 ```
 """  # noqa: E501
 
-from langchain_nvidia_ai_endpoints.chat_models import ChatNVIDIA
+from langchain_nvidia_ai_endpoints.chat_models import ChatNVIDIA, ChatOpenNVIDIA, ChatNVCF
 from langchain_nvidia_ai_endpoints.embeddings import NVIDIAEmbeddings
 
-__all__ = ["ChatNVIDIA", "NVIDIAEmbeddings"]
+__all__ = ["ChatNVIDIA", "NVIDIAEmbeddings", "ChatOpenNVIDIA", "ChatNVCF"]
