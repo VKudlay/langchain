@@ -66,6 +66,8 @@ from langchain_core.utils.function_calling import (
 
 logger = logging.getLogger(__name__)
 
+from langchain_nvidia_ai_endpoints.openapi._openapi_client import DefaultEnvMixin
+
 
 def _convert_dict_to_message(_dict: Mapping[str, Any]) -> BaseMessage:
     """Convert a dictionary to a LangChain message.
@@ -187,7 +189,7 @@ class _FunctionCall(TypedDict):
     name: str
 
 
-class ChatOpenAPI(BaseChatModel):
+class ChatOpenAPI(DefaultEnvMixin, BaseChatModel):
     """`OpenAI` Chat large language models API.
 
     To use, you should have the
@@ -221,14 +223,10 @@ class ChatOpenAPI(BaseChatModel):
     """What sampling temperature to use."""
     model_kwargs: Dict[str, Any] = Field(default_factory=dict)
     """Holds any model parameters valid for `create` call not explicitly specified."""
-    # When updating this to use a SecretStr
-    # Check for classes that derive from this class (as some of them
-    # may assume openai_api_key is a str)
     api_key: Optional[str] = Field(default=None)
     """Automatically inferred from env var `OPENAI_API_KEY` if not provided."""
     base_url: Optional[str] = Field(default=None)
-    """Base URL path for API requests, leave blank if not using a proxy or service 
-        emulator."""
+    """Base URL path for API requests, leave blank if not using a proxy/service emulator."""
     organization: Optional[str] = Field(default=None)
     """Automatically inferred from env var `OPENAI_ORG_ID` if not provided."""
     # to support explicit proxy for OpenAI
@@ -236,8 +234,7 @@ class ChatOpenAPI(BaseChatModel):
     request_timeout: Union[float, Tuple[float, float], Any, None] = Field(
         default=None, alias="timeout"
     )
-    """Timeout for requests to OpenAI completion API. Can be float, httpx.Timeout or 
-        None."""
+    """Timeout for requests to completion API. Can be float, httpx.Timeout or None."""
     max_retries: int = 2
     """Maximum number of retries to make when generating."""
     streaming: bool = False
@@ -258,15 +255,48 @@ class ChatOpenAPI(BaseChatModel):
     when tiktoken is called, you can specify a model name to use here."""
     default_headers: Union[Mapping[str, str], None] = None
     default_query: Union[Mapping[str, object], None] = None
-    # Configure a custom httpx client. See the
-    # [httpx documentation](https://www.python-httpx.org/api/#client) for more details.
     http_client: Union[Any, None] = None
+    use_base_as_endpoint: bool = Field(False)
     """Optional httpx.Client."""
 
     class Config:
         """Configuration for this pydantic object."""
-
         allow_population_by_field_name = True
+
+    ## Utilities 
+
+    @property
+    def available_models(self) -> list:
+        """Map the available models that can be invoked."""
+        return [m.id for m in self.client._client.models.list().data]
+
+    @classmethod
+    def get_client_classes(self):
+        return openai.OpenAI, openai.AsyncOpenAI
+
+    @classmethod
+    def get_available_models(cls, **kwargs: Any) -> list:
+        """Map the available models that can be invoked. Callable from class"""
+        new_kws = cls.pull_env_dict(**kwargs)
+        SClient = cls.get_client_classes()[0]
+        return [m.id for m in SClient(**new_kws).models.list().data]
+    
+    @property
+    def lc_attributes(self) -> Dict[str, Any]:
+        attributes: Dict[str, Any] = {}
+
+        if self.organization:
+            attributes["organization"] = self.organization
+
+        if self.base_url:
+            attributes["base_url"] = self.base_url
+
+        if self.proxy:
+            attributes["proxy"] = self.proxy
+
+        return attributes
+
+    ## Validators
 
     @root_validator(pre=True)
     def build_extra(cls, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -302,10 +332,7 @@ class ChatOpenAPI(BaseChatModel):
         if values["n"] > 1 and values["streaming"]:
             raise ValueError("n must be 1 when streaming.")
 
-        values["api_key"] = values.get("api_key")
-        values["organization"] = values.get("openai_organization")
-        values["base_url"] = values.get("base_url")
-        values["proxy"] = values.get("proxy", "")
+        values = cls.pull_env_dict(**values)
 
         client_params = {
             "api_key": values["api_key"],
@@ -316,13 +343,19 @@ class ChatOpenAPI(BaseChatModel):
             "default_headers": values["default_headers"],
             "default_query": values["default_query"],
             "http_client": values["http_client"],
+            "use_base_as_endpoint": values["use_base_as_endpoint"],
         }
 
+        print("ChatOpenAPI", client_params)
+        SClient, AClient = cls.get_client_classes()
         if not values.get("client"):
-            values["client"] = openai.OpenAI(**client_params).chat.completions
+            values["client"] = SClient(**client_params).chat.completions
         if not values.get("async_client"):
-            values["async_client"] = openai.AsyncOpenAI(**client_params).chat.completions
+            values["async_client"] = AClient(**client_params).chat.completions
+
         return values
+
+    ## Standard forward-pass methods
 
     @property
     def _default_params(self) -> Dict[str, Any]:
@@ -511,6 +544,8 @@ class ChatOpenAPI(BaseChatModel):
         response = await self.async_client.create(messages=message_dicts, **params)
         return self._create_chat_result(response)
 
+    ## OpenAI-style Utility Methods
+
     @property
     def _identifying_params(self) -> Dict[str, Any]:
         """Get the identifying parameters."""
@@ -561,6 +596,8 @@ class ChatOpenAPI(BaseChatModel):
                 " See https://platform.openai.com/docs/guides/text-generation/managing-tokens"
                 " for information on how messages are converted to tokens."
             )
+
+    ## Function/Tool Binding Methods
 
     def bind_functions(
         self,
@@ -666,150 +703,3 @@ class ChatOpenAPI(BaseChatModel):
             tools=formatted_tools,
             **kwargs,
         )
-
-
-class ChatOpenAI(ChatOpenAPI):
-    
-    openai_api_key: Optional[str] = Field(default=None, alias="api_key")
-    """Automatically inferred from env var `OPENAI_API_KEY` if not provided."""
-    openai_api_base: Optional[str] = Field(default=None, alias="base_url")
-    """Base URL path for API requests, leave blank if not using a proxy or service 
-        emulator."""
-    openai_organization: Optional[str] = Field(default=None, alias="organization")
-    """Automatically inferred from env var `OPENAI_ORG_ID` if not provided."""
-    # to support explicit proxy for OpenAI
-    openai_proxy: Optional[str] = None
-
-    @property
-    def _llm_type(self) -> str:
-        """Return type of chat model."""
-        return "openai-chat"
-
-    @property
-    def lc_secrets(self) -> Dict[str, str]:
-        return {"openai_api_key": "OPENAI_API_KEY"}
-
-    @classmethod
-    def get_lc_namespace(cls) -> List[str]:
-        """Get the namespace of the langchain object."""
-        return ["langchain", "chat_models", "openai"]
-
-    @property
-    def lc_attributes(self) -> Dict[str, Any]:
-        attributes: Dict[str, Any] = {}
-
-        if self.openai_organization:
-            attributes["openai_organization"] = self.openai_organization
-
-        if self.openai_api_base:
-            attributes["openai_api_base"] = self.openai_api_base
-
-        if self.openai_proxy:
-            attributes["openai_proxy"] = self.openai_proxy
-
-        return attributes
-    
-    @root_validator()
-    def validate_environment(cls, values: Dict) -> Dict:
-        """Validate that api key and python package exists in environment."""
-        if values["n"] < 1:
-            raise ValueError("n must be at least 1.")
-        if values["n"] > 1 and values["streaming"]:
-            raise ValueError("n must be 1 when streaming.")
-
-        values["openai_api_key"] = get_from_dict_or_env(
-            values, "openai_api_key", "OPENAI_API_KEY"
-        )
-        # Check OPENAI_ORGANIZATION for backwards compatibility.
-        values["openai_organization"] = (
-            values["openai_organization"]
-            or os.getenv("OPENAI_ORG_ID")
-            or os.getenv("OPENAI_ORGANIZATION")
-        )
-        values["openai_api_base"] = values["openai_api_base"] or os.getenv(
-            "OPENAI_API_BASE"
-        )
-        values["openai_proxy"] = get_from_dict_or_env(
-            values,
-            "openai_proxy",
-            "OPENAI_PROXY",
-            default="",
-        )
-
-        client_params = {
-            "api_key": values["openai_api_key"],
-            "organization": values["openai_organization"],
-            "base_url": values["openai_api_base"],
-            "timeout": values["request_timeout"],
-            "max_retries": values["max_retries"],
-            "default_headers": values["default_headers"],
-            "default_query": values["default_query"],
-            "http_client": values["http_client"],
-        }
-
-        if not values.get("client"):
-            values["client"] = openai.OpenAI(**client_params).chat.completions
-        if not values.get("async_client"):
-            values["async_client"] = openai.AsyncOpenAI(
-                **client_params
-            ).chat.completions
-        return values
-
-    def _get_encoding_model(self) -> Tuple[str, tiktoken.Encoding]:
-        if self.tiktoken_model_name is not None:
-            model = self.tiktoken_model_name
-        else:
-            model = self.model_name
-            if model == "gpt-3.5-turbo":
-                # gpt-3.5-turbo may change over time.
-                # Returning num tokens assuming gpt-3.5-turbo-0301.
-                model = "gpt-3.5-turbo-0301"
-            elif model == "gpt-4":
-                # gpt-4 may change over time.
-                # Returning num tokens assuming gpt-4-0314.
-                model = "gpt-4-0314"
-        # Returns the number of tokens used by a list of messages.
-        try:
-            encoding = tiktoken.encoding_for_model(model)
-        except KeyError:
-            logger.warning("Warning: model not found. Using cl100k_base encoding.")
-            model = "cl100k_base"
-            encoding = tiktoken.get_encoding(model)
-        return model, encoding
-
-    def get_num_tokens_from_messages(self, messages: List[BaseMessage]) -> int:
-        """Calculate num tokens for gpt-3.5-turbo and gpt-4 with tiktoken package.
-
-        Official documentation: https://github.com/openai/openai-cookbook/blob/
-        main/examples/How_to_format_inputs_to_ChatGPT_models.ipynb"""
-        if sys.version_info[1] <= 7:
-            return super().get_num_tokens_from_messages(messages)
-        model, encoding = self._get_encoding_model()
-        if model.startswith("gpt-3.5-turbo-0301"):
-            # every message follows <im_start>{role/name}\n{content}<im_end>\n
-            tokens_per_message = 4
-            # if there's a name, the role is omitted
-            tokens_per_name = -1
-        elif model.startswith("gpt-3.5-turbo") or model.startswith("gpt-4"):
-            tokens_per_message = 3
-            tokens_per_name = 1
-        else:
-            raise NotImplementedError(
-                f"get_num_tokens_from_messages() is not presently implemented "
-                f"for model {model}. See "
-                "https://platform.openai.com/docs/guides/text-generation/managing-tokens"
-                " for information on how messages are converted to tokens."
-            )
-        num_tokens = 0
-        messages_dict = [_convert_message_to_dict(m) for m in messages]
-        for message in messages_dict:
-            num_tokens += tokens_per_message
-            for key, value in message.items():
-                # Cast str(value) in case the message value is not a string
-                # This occurs with function messages
-                num_tokens += len(encoding.encode(str(value)))
-                if key == "name":
-                    num_tokens += tokens_per_name
-        # every reply is primed with <im_start>assistant
-        num_tokens += 3
-        return num_tokens

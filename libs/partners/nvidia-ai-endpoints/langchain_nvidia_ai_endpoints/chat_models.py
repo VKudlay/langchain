@@ -1,4 +1,5 @@
-from langchain_nvidia_ai_endpoints.chat_models_open import ChatOpenNVIDIA
-from langchain_nvidia_ai_endpoints.chat_models_nvcf import ChatNVCF
+from langchain_nvidia_ai_endpoints.openapi.chat_nvidia import ChatOpenNVIDIA
+from langchain_nvidia_ai_endpoints.nvcf.chat_models import ChatNVCF
 
-ChatNVIDIA = ChatOpenNVIDIA
+class ChatNVIDIA:
+    models = []

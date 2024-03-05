@@ -19,22 +19,75 @@ from langchain_core.messages import BaseMessage
 from langchain_core.pydantic_v1 import Field, root_validator
 from langchain_core.utils import get_from_dict_or_env
 
-from langchain_nvidia_ai_endpoints.chat_openapi import ChatOpenAPI, _convert_message_to_dict
+from langchain_nvidia_ai_endpoints.openapi.chat_openapi import ChatOpenAPI, _convert_message_to_dict
+from langchain_nvidia_ai_endpoints.openapi._openapi_client import (
+    SyncClientMixin,
+    AsyncClientMixin,
+    SyncHttpxClientMixin,
+    AsyncHttpxClientMixin,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class ChatOpenNVIDIA(ChatOpenAPI):
+class NVIDIAMixin:
+    @classmethod
+    def pull_env_dict(cls, **kwargs: dict):
+        """
+        This automatically infers the following arguments from their corresponding environment variables if they are not provided:
+        - `api_key` from `OPENAI_API_KEY`
+        - `organization` from `OPENAI_ORG_ID`
+        """
+        kws = {k.replace("nvidia_", ""): v for k,v in kwargs.items()}
+        kws = {k.replace("openai_", ""): v for k,v in kwargs.items()}
+        kws["api_key"] = (
+            kws.get("api_key")
+            or os.environ.get("NVIDIA_API_KEY")
+        )
+
+        if not kws.get("api_key"):
+            raise Exception(
+                "The api_key client option must be set either by passing api_key"
+                " to the client or by setting the OPENAI_API_KEY environment variable"
+            )
+        
+        if "api_base" in kws:
+            kws["base_url"] = kws.pop("api_base")
+        
+        kws["base_url"] = (
+            kws.get("base_url")
+            or os.environ.get("NVIDIA_BASE_URL")
+            or os.environ.get("NVIDIA_API_BASE")
+            or "https://api.nvidia.com/v1"
+        )
+
+        kws["proxy"] = (
+            kws.get("base_url")
+            or os.environ.get("NVIDIA_PROXY")
+        )
+
+        return kws
+
+
+class SyncNVIDIA(NVIDIAMixin, SyncClientMixin, SyncHttpxClientMixin):
+    pass
+
+
+class AsyncNVIDIA(NVIDIAMixin, AsyncClientMixin, AsyncHttpxClientMixin):
+    pass
+
+
+class ChatOpenNVIDIA(NVIDIAMixin, ChatOpenAPI):
     
-    nvidia_api_key: Optional[str] = Field(default=None, alias="api_key")
-    """Automatically inferred from env var `OPENAI_API_KEY` if not provided."""
-    nvidia_api_base: Optional[str] = Field(default=None, alias="base_url")
+    api_key: Optional[str] = Field(default=None, alias="nvidia_api_key")
+    """Automatically inferred from env var `NVIDIA_API_KEY` if not provided."""
+    base_url: Optional[str] = Field(default=None, alias="nvidia_api_base")
     """Base URL path for API requests, leave blank if not using a proxy or service 
         emulator."""
-    nvidia_organization: Optional[str] = Field(default=None, alias="organization")
+    organization: Optional[str] = Field(default=None, alias="nvidia_organization")
     """Automatically inferred from env var `OPENAI_ORG_ID` if not provided."""
     # to support explicit proxy for OpenAI
-    nvidia_proxy: Optional[str] = None
+    proxy: Optional[str] = Field(default=None, alias="nvidia_proxy")
 
     @property
     def _llm_type(self) -> str:
@@ -43,86 +96,31 @@ class ChatOpenNVIDIA(ChatOpenAPI):
 
     @property
     def lc_secrets(self) -> Dict[str, str]:
-        return {"nvidia_api_key": "NVIDIA_API_KEY"}
+        return {"api_key": "NVIDIA_API_KEY"}
 
     @classmethod
     def get_lc_namespace(cls) -> List[str]:
         """Get the namespace of the langchain object."""
         return ["langchain", "chat_models", "nvidia"]
 
-    @property
-    def lc_attributes(self) -> Dict[str, Any]:
-        attributes: Dict[str, Any] = {}
-
-        if self.openai_organization:
-            attributes["nvidia_organization"] = self.nvidia_organization
-
-        if self.openai_api_base:
-            attributes["nvidia_api_base"] = self.nvidia_api_base
-
-        if self.openai_proxy:
-            attributes["nvidia_proxy"] = self.nvidia_proxy
-
-        return attributes
-    
-    @root_validator()
-    def validate_environment(cls, values: Dict) -> Dict:
-        """Validate that api key and python package exists in environment."""
-        if values["n"] < 1:
-            raise ValueError("n must be at least 1.")
-        if values["n"] > 1 and values["streaming"]:
-            raise ValueError("n must be 1 when streaming.")
-
-        values["nvidia_api_key"] = get_from_dict_or_env(
-            values, "nvidia_api_key", "NVIDIA_API_KEY"
-        )
-        # Check OPENAI_ORGANIZATION for backwards compatibility.
-        values["nvidia_organization"] = (
-            values["nvidia_organization"]
-            or os.getenv("NVIDIA_ORG_ID")
-            or os.getenv("NVIDIA_ORGANIZATION")
-        )
-        values["nvidia_api_base"] = values["nvidia_api_base"] or os.getenv(
-            "NVIDIA_API_BASE"
-        )
-        values["nvidia_proxy"] = get_from_dict_or_env(
-            values,
-            "nvidia_proxy",
-            "NVIDIA_PROXY",
-            default="",
-        )
-
-        client_params = {
-            "api_key": values["nvidia_api_key"],
-            "organization": values["nvidia_organization"],
-            "base_url": values["nvidia_api_base"],
-            "timeout": values["request_timeout"],
-            "max_retries": values["max_retries"],
-            "default_headers": values["default_headers"],
-            "default_query": values["default_query"],
-            "http_client": values["http_client"],
-        }
-
-        if not values.get("client"):
-            values["client"] = openai.OpenAI(**client_params).chat.completions
-        if not values.get("async_client"):
-            values["async_client"] = openai.AsyncOpenAI(**client_params).chat.completions
-        return values
+    @classmethod
+    def get_client_classes(self):
+        return SyncNVIDIA, AsyncNVIDIA
 
     def _get_encoding_model(self) -> Tuple[str, tiktoken.Encoding]:
         if self.tiktoken_model_name is not None:
             model = self.tiktoken_model_name
-        else:
-            model = self.model_name
-            if model == "gpt-3.5-turbo":
-                # gpt-3.5-turbo may change over time.
-                # Returning num tokens assuming gpt-3.5-turbo-0301.
-                model = "gpt-3.5-turbo-0301"
-            elif model == "gpt-4":
-                # gpt-4 may change over time.
-                # Returning num tokens assuming gpt-4-0314.
-                model = "gpt-4-0314"
-        # Returns the number of tokens used by a list of messages.
+        # else:
+        #     model = self.model_name
+        #     if model == "gpt-3.5-turbo":
+        #         # gpt-3.5-turbo may change over time.
+        #         # Returning num tokens assuming gpt-3.5-turbo-0301.
+        #         model = "gpt-3.5-turbo-0301"
+        #     elif model == "gpt-4":
+        #         # gpt-4 may change over time.
+        #         # Returning num tokens assuming gpt-4-0314.
+        #         model = "gpt-4-0314"
+        # # Returns the number of tokens used by a list of messages.
         try:
             encoding = tiktoken.encoding_for_model(model)
         except KeyError:
