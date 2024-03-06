@@ -465,9 +465,9 @@ class _NVIDIAClient(BaseModel):
         return self.client.available_functions
 
     @property
-    def available_models(self) -> dict:
+    def available_models(self) -> list:
         """Map the available models that can be invoked."""
-        return self.client.available_models
+        return list(self.client.available_models.keys())
 
     @staticmethod
     def get_available_functions(**kwargs: Any) -> List[dict]:
@@ -487,3 +487,7 @@ class _NVIDIAClient(BaseModel):
         known_fns = self.client.available_functions
         fn_spec = [f for f in known_fns if f.get("id") == model_key][0]
         return fn_spec
+
+    def get_model_clients(self) -> list:
+        """Map the available models that can be invoked."""
+        return {model_name: self.bind(model=model_name) for model_name in self.available_models}

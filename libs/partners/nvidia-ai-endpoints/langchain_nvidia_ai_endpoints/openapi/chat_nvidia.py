@@ -30,51 +30,7 @@ from langchain_nvidia_ai_endpoints.openapi._openapi_client import (
 logger = logging.getLogger(__name__)
 
 
-class NVIDIAMixin:
-    @classmethod
-    def pull_env_dict(cls, **kwargs: dict):
-        """
-        This automatically infers the following arguments from their corresponding environment variables if they are not provided:
-        - `api_key` from `OPENAI_API_KEY`
-        - `organization` from `OPENAI_ORG_ID`
-        """
-        kws = {k.replace("nvidia_", ""): v for k,v in kwargs.items()}
-        kws = {k.replace("openai_", ""): v for k,v in kwargs.items()}
-        kws["api_key"] = (
-            kws.get("api_key")
-            or os.environ.get("NVIDIA_API_KEY")
-        )
-
-        if not kws.get("api_key"):
-            raise Exception(
-                "The api_key client option must be set either by passing api_key"
-                " to the client or by setting the OPENAI_API_KEY environment variable"
-            )
-        
-        if "api_base" in kws:
-            kws["base_url"] = kws.pop("api_base")
-        
-        kws["base_url"] = (
-            kws.get("base_url")
-            or os.environ.get("NVIDIA_BASE_URL")
-            or os.environ.get("NVIDIA_API_BASE")
-            or "https://api.nvidia.com/v1"
-        )
-
-        kws["proxy"] = (
-            kws.get("base_url")
-            or os.environ.get("NVIDIA_PROXY")
-        )
-
-        return kws
-
-
-class SyncNVIDIA(NVIDIAMixin, SyncClientMixin, SyncHttpxClientMixin):
-    pass
-
-
-class AsyncNVIDIA(NVIDIAMixin, AsyncClientMixin, AsyncHttpxClientMixin):
-    pass
+from langchain_nvidia_ai_endpoints.openapi.nvidia import NVIDIAMixin, SyncNVIDIA, AsyncNVIDIA
 
 
 class ChatOpenNVIDIA(NVIDIAMixin, ChatOpenAPI):
@@ -104,7 +60,7 @@ class ChatOpenNVIDIA(NVIDIAMixin, ChatOpenAPI):
         return ["langchain", "chat_models", "nvidia"]
 
     @classmethod
-    def get_client_classes(self):
+    def get_client_classes(cls):
         return SyncNVIDIA, AsyncNVIDIA
 
     def _get_encoding_model(self) -> Tuple[str, tiktoken.Encoding]:

@@ -24,6 +24,7 @@ from typing import (
 )
 
 import openai
+from httpx._client import BaseClient
 import tiktoken
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
@@ -205,100 +206,119 @@ class ChatOpenAPI(DefaultEnvMixin, BaseChatModel):
             openai = ChatOpenAI(model_name="gpt-3.5-turbo")
     """
 
-    @classmethod
-    def is_lc_serializable(cls) -> bool:
-        """Return whether this model can be serialized by Langchain."""
-        return True
+    client: Any = Field(default=None, exclude=True)  #: :meta private:
+    async_client: Any = Field(default=None, exclude=True)  #: :meta private:
+    model_name: str = Field(default="gpt-3.5-turbo", alias="model")
+    temperature: float = 0.7
+    model_kwargs: Dict[str, Any] = Field(default_factory=dict)
+    api_key: Optional[str] = Field(default=None)
+    base_url: Optional[str] = Field(default=None)
+    organization: Optional[str] = Field(default=None)
+    proxy: Optional[str] = None
+    request_timeout: Union[float, Tuple[float, float], Any, None] = Field(
+        default=None, alias="timeout"
+    )
+    max_retries: int = 2
+    streaming: bool = False
+    n: int = 1
+    max_tokens: Optional[int] = None
+    tiktoken_model_name: Optional[str] = None
+    default_headers: Union[Mapping[str, str], None] = None
+    default_query: Union[Mapping[str, object], None] = None
+    http_client: Union[Any, None] = None
+    use_base_as_endpoint: bool = Field(False)
+
+    class Config:
+        """Configuration for this pydantic object."""
+        allow_population_by_field_name = True
+
+    ## Properties/meta
 
     @property
     def _llm_type(self) -> str:
         """Return type of chat model."""
         return "openapi-chat"
 
-    client: Any = Field(default=None, exclude=True)  #: :meta private:
-    async_client: Any = Field(default=None, exclude=True)  #: :meta private:
-    model_name: str = Field(default="gpt-3.5-turbo", alias="model")
-    """Model name to use."""
-    temperature: float = 0.7
-    """What sampling temperature to use."""
-    model_kwargs: Dict[str, Any] = Field(default_factory=dict)
-    """Holds any model parameters valid for `create` call not explicitly specified."""
-    api_key: Optional[str] = Field(default=None)
-    """Automatically inferred from env var `OPENAI_API_KEY` if not provided."""
-    base_url: Optional[str] = Field(default=None)
-    """Base URL path for API requests, leave blank if not using a proxy/service emulator."""
-    organization: Optional[str] = Field(default=None)
-    """Automatically inferred from env var `OPENAI_ORG_ID` if not provided."""
-    # to support explicit proxy for OpenAI
-    proxy: Optional[str] = None
-    request_timeout: Union[float, Tuple[float, float], Any, None] = Field(
-        default=None, alias="timeout"
-    )
-    """Timeout for requests to completion API. Can be float, httpx.Timeout or None."""
-    max_retries: int = 2
-    """Maximum number of retries to make when generating."""
-    streaming: bool = False
-    """Whether to stream the results or not."""
-    n: int = 1
-    """Number of chat completions to generate for each prompt."""
-    max_tokens: Optional[int] = None
-    """Maximum number of tokens to generate."""
-    tiktoken_model_name: Optional[str] = None
-    """The model name to pass to tiktoken when using this class. 
-    Tiktoken is used to count the number of tokens in documents to constrain 
-    them to be under a certain limit. By default, when set to None, this will 
-    be the same as the embedding model name. However, there are some cases 
-    where you may want to use this Embedding class with a model name not 
-    supported by tiktoken. This can include when using Azure embeddings or 
-    when using one of the many model providers that expose an OpenAI-like 
-    API but with different models. In those cases, in order to avoid erroring 
-    when tiktoken is called, you can specify a model name to use here."""
-    default_headers: Union[Mapping[str, str], None] = None
-    default_query: Union[Mapping[str, object], None] = None
-    http_client: Union[Any, None] = None
-    use_base_as_endpoint: bool = Field(False)
-    """Optional httpx.Client."""
+    @property
+    def lc_secrets(self) -> Dict[str, str]:
+        return {"api_key": "API_KEY"}
 
-    class Config:
-        """Configuration for this pydantic object."""
-        allow_population_by_field_name = True
+    @property
+    def lc_attributes(self) -> Dict[str, Any]:
+        attributes: Dict[str, Any] = {}
+        if self.organization:
+            attributes["organization"] = self.organization
+        if self.base_url:
+            attributes["base_url"] = self.base_url
+        if self.proxy:
+            attributes["proxy"] = self.proxy
+        return attributes
 
-    ## Utilities 
+    @property
+    def _default_params(self) -> Dict[str, Any]:
+        """Get the default parameters for calling OpenAI API."""
+        params = {
+            "model": self.model_name,
+            "stream": self.streaming,
+            "n": self.n,
+            "temperature": self.temperature,
+            **self.model_kwargs,
+        }
+        if self.max_tokens is not None:
+            params["max_tokens"] = self.max_tokens
+        return params
 
     @property
     def available_models(self) -> list:
         """Map the available models that can be invoked."""
         return [m.id for m in self.client._client.models.list().data]
 
+    @property
+    def _identifying_params(self) -> Dict[str, Any]:
+        """Get the identifying parameters."""
+        return {"model_name": self.model_name, **self._default_params}
+
+    @property
+    def _invocation_params(self) -> Dict[str, Any]:
+        return {**{"model": self.model_name}, **super()._invocation_params}
+
+    @property
+    def _invocation_params(self) -> Dict[str, Any]:
+        return {**{"model": self.model_name}, **self._default_params}
+
     @classmethod
-    def get_client_classes(self):
+    def is_lc_serializable(cls) -> bool:
+        """Return whether this model can be serialized by Langchain."""
+        return True
+
+    @classmethod
+    def get_client_classes(cls):
         return openai.OpenAI, openai.AsyncOpenAI
+    
+    @classmethod
+    def get_client_model_list(cls, client: Optional[BaseClient]=None, **kwargs: Any) -> list:
+        """Map the available models that can be invoked. Callable from class"""
+        new_kws = cls.pull_env_dict(**kwargs)
+        if client is None:
+            client = cls.get_client_classes()[0]
+        return client(**new_kws).models.list().data
 
     @classmethod
     def get_available_models(cls, **kwargs: Any) -> list:
         """Map the available models that can be invoked. Callable from class"""
-        new_kws = cls.pull_env_dict(**kwargs)
-        SClient = cls.get_client_classes()[0]
-        return [m.id for m in SClient(**new_kws).models.list().data]
-    
+        return [m.id for m in cls.get_client_model_list(**kwargs)]
+
+    def get_model_details(self, model: Optional[str] = None) -> dict:
+        """Get more meta-details about a model retrieved by a given name"""
+        if model is None:
+            model = self.model
+        known_fns = self.client._client.models.list().data
+        fn_spec = [f for f in known_fns if f.get("id") == model][0]
+        return fn_spec
+
     def get_model_clients(self) -> list:
         """Map the available models that can be invoked."""
         return {model_name: self.bind(model=model_name) for model_name in self.available_models}
-
-    @property
-    def lc_attributes(self) -> Dict[str, Any]:
-        attributes: Dict[str, Any] = {}
-
-        if self.organization:
-            attributes["organization"] = self.organization
-
-        if self.base_url:
-            attributes["base_url"] = self.base_url
-
-        if self.proxy:
-            attributes["proxy"] = self.proxy
-
-        return attributes
 
     ## Validators
 
@@ -350,7 +370,6 @@ class ChatOpenAPI(DefaultEnvMixin, BaseChatModel):
             "use_base_as_endpoint": values["use_base_as_endpoint"],
         }
 
-        print("ChatOpenAPI", client_params)
         SClient, AClient = cls.get_client_classes()
         if not values.get("client"):
             values["client"] = SClient(**client_params).chat.completions
@@ -360,41 +379,6 @@ class ChatOpenAPI(DefaultEnvMixin, BaseChatModel):
         return values
 
     ## Standard forward-pass methods
-
-    @property
-    def _default_params(self) -> Dict[str, Any]:
-        """Get the default parameters for calling OpenAI API."""
-        params = {
-            "model": self.model_name,
-            "stream": self.streaming,
-            "n": self.n,
-            "temperature": self.temperature,
-            **self.model_kwargs,
-        }
-        if self.max_tokens is not None:
-            params["max_tokens"] = self.max_tokens
-        return params
-
-    def _combine_llm_outputs(self, llm_outputs: List[Optional[dict]]) -> dict:
-        overall_token_usage: dict = {}
-        system_fingerprint = None
-        for output in llm_outputs:
-            if output is None:
-                # Happens in streaming
-                continue
-            token_usage = output["token_usage"]
-            if token_usage is not None:
-                for k, v in token_usage.items():
-                    if k in overall_token_usage:
-                        overall_token_usage[k] += v
-                    else:
-                        overall_token_usage[k] = v
-            if system_fingerprint is None:
-                system_fingerprint = output.get("system_fingerprint")
-        combined = {"token_usage": overall_token_usage, "model_name": self.model_name}
-        if system_fingerprint:
-            combined["system_fingerprint"] = system_fingerprint
-        return combined
 
     def _stream(
         self,
@@ -429,62 +413,6 @@ class ChatOpenAPI(DefaultEnvMixin, BaseChatModel):
             yield chunk
             if run_manager:
                 run_manager.on_llm_new_token(chunk.text, chunk=chunk, logprobs=logprobs)
-
-    def _generate(
-        self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
-        stream: Optional[bool] = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        should_stream = stream if stream is not None else self.streaming
-        if should_stream:
-            stream_iter = self._stream(
-                messages, stop=stop, run_manager=run_manager, **kwargs
-            )
-            return generate_from_stream(stream_iter)
-        message_dicts, params = self._create_message_dicts(messages, stop)
-        params = {
-            **params,
-            **({"stream": stream} if stream is not None else {}),
-            **kwargs,
-        }
-        response = self.client.create(messages=message_dicts, **params)
-        return self._create_chat_result(response)
-
-    def _create_message_dicts(
-        self, messages: List[BaseMessage], stop: Optional[List[str]]
-    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        params = self._default_params
-        if stop is not None:
-            if "stop" in params:
-                raise ValueError("`stop` found in both the input and default params.")
-            params["stop"] = stop
-        message_dicts = [_convert_message_to_dict(m) for m in messages]
-        return message_dicts, params
-
-    def _create_chat_result(self, response: Union[dict, BaseModel]) -> ChatResult:
-        generations = []
-        if not isinstance(response, dict):
-            response = response.dict()
-        for res in response["choices"]:
-            message = _convert_dict_to_message(res["message"])
-            generation_info = dict(finish_reason=res.get("finish_reason"))
-            if "logprobs" in res:
-                generation_info["logprobs"] = res["logprobs"]
-            gen = ChatGeneration(
-                message=message,
-                generation_info=generation_info,
-            )
-            generations.append(gen)
-        token_usage = response.get("usage", {})
-        llm_output = {
-            "token_usage": token_usage,
-            "model_name": self.model_name,
-            "system_fingerprint": response.get("system_fingerprint", ""),
-        }
-        return ChatResult(generations=generations, llm_output=llm_output)
 
     async def _astream(
         self,
@@ -524,6 +452,29 @@ class ChatOpenAPI(DefaultEnvMixin, BaseChatModel):
                     token=chunk.text, chunk=chunk, logprobs=logprobs
                 )
 
+    def _generate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        stream: Optional[bool] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        should_stream = stream if stream is not None else self.streaming
+        if should_stream:
+            stream_iter = self._stream(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
+            return generate_from_stream(stream_iter)
+        message_dicts, params = self._create_message_dicts(messages, stop)
+        params = {
+            **params,
+            **({"stream": stream} if stream is not None else {}),
+            **kwargs,
+        }
+        response = self.client.create(messages=message_dicts, **params)
+        return self._create_chat_result(response)
+
     async def _agenerate(
         self,
         messages: List[BaseMessage],
@@ -548,23 +499,63 @@ class ChatOpenAPI(DefaultEnvMixin, BaseChatModel):
         response = await self.async_client.create(messages=message_dicts, **params)
         return self._create_chat_result(response)
 
-    ## OpenAI-style Utility Methods
+    ## Helper Methods
 
-    @property
-    def _identifying_params(self) -> Dict[str, Any]:
-        """Get the identifying parameters."""
-        return {"model_name": self.model_name, **self._default_params}
+    def _combine_llm_outputs(self, llm_outputs: List[Optional[dict]]) -> dict:
+        overall_token_usage: dict = {}
+        system_fingerprint = None
+        for output in llm_outputs:
+            if output is None:
+                # Happens in streaming
+                continue
+            token_usage = output["token_usage"]
+            if token_usage is not None:
+                for k, v in token_usage.items():
+                    if k in overall_token_usage:
+                        overall_token_usage[k] += v
+                    else:
+                        overall_token_usage[k] = v
+            if system_fingerprint is None:
+                system_fingerprint = output.get("system_fingerprint")
+        combined = {"token_usage": overall_token_usage, "model_name": self.model_name}
+        if system_fingerprint:
+            combined["system_fingerprint"] = system_fingerprint
+        return combined
 
-    def _get_invocation_params(
-        self, stop: Optional[List[str]] = None, **kwargs: Any
-    ) -> Dict[str, Any]:
-        """Get the parameters used to invoke the model."""
-        return {
-            "model": self.model_name,
-            **super()._get_invocation_params(stop=stop),
-            **self._default_params,
-            **kwargs,
+    def _create_message_dicts(
+        self, messages: List[BaseMessage], stop: Optional[List[str]]
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        params = self._default_params
+        if stop is not None:
+            if "stop" in params:
+                raise ValueError("`stop` found in both the input and default params.")
+            params["stop"] = stop
+        message_dicts = [_convert_message_to_dict(m) for m in messages]
+        return message_dicts, params
+
+    def _create_chat_result(self, response: Union[dict, BaseModel]) -> ChatResult:
+        generations = []
+        if not isinstance(response, dict):
+            response = response.dict()
+        for res in response["choices"]:
+            message = _convert_dict_to_message(res["message"])
+            generation_info = dict(finish_reason=res.get("finish_reason"))
+            if "logprobs" in res:
+                generation_info["logprobs"] = res["logprobs"]
+            gen = ChatGeneration(
+                message=message,
+                generation_info=generation_info,
+            )
+            generations.append(gen)
+        token_usage = response.get("usage", {})
+        llm_output = {
+            "token_usage": token_usage,
+            "model_name": self.model_name,
+            "system_fingerprint": response.get("system_fingerprint", ""),
         }
+        return ChatResult(generations=generations, llm_output=llm_output)
+
+    ## OpenAI-style Utility Methods
 
     def _get_encoding_model(self) -> Tuple[str, tiktoken.Encoding]:
         if self.tiktoken_model_name is not None:

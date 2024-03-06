@@ -30,58 +30,7 @@ from langchain_nvidia_ai_endpoints.openapi._openapi_client import (
 
 logger = logging.getLogger(__name__)
 
-
-class OpenAIMixin:
-    @classmethod
-    def pull_env_dict(cls, **kwargs: dict):
-        """
-        This automatically infers the following arguments from their corresponding environment variables if they are not provided:
-        - `api_key` from `OPENAI_API_KEY`
-        - `organization` from `OPENAI_ORG_ID`
-        """
-        kws = {k.replace("openai_", ""): v for k,v in kwargs.items()}
-        kws = {k.replace("nvidia_", ""): v for k,v in kwargs.items()}
-        kws["api_key"] = (
-            kws.get("api_key")
-            or os.environ.get("OPENAI_API_KEY")
-        )
-
-        if not kws.get("api_key"):
-            raise OpenAIError(
-                "The api_key client option must be set either by passing api_key"
-                " to the client or by setting the OPENAI_API_KEY environment variable"
-            )
-        
-        kws["organization"] = (
-            kws.get("organization")
-            or os.environ.get("OPENAI_ORG_ID")
-            or os.environ.get("OPENAI_ORGANIZATION")
-        )
-        
-        if "api_base" in kws:
-            kws["base_url"] = kws.pop("api_base")
-        
-        kws["base_url"] = (
-            kws.get("base_url")
-            or os.environ.get("OPENAI_BASE_URL")
-            or os.environ.get("OPENAI_API_BASE")
-            or "https://api.openai.com/v1"
-        )
-
-        kws["proxy"] = (
-            kws.get("proxy")
-            or os.environ.get("OPENAI_PROXY")
-        )
-
-        return kws
-
-
-class OpenAI(OpenAIMixin, SyncClientMixin, SyncHttpxClientMixin):
-    pass
-
-
-class AsyncOpenAI(OpenAIMixin, AsyncClientMixin, AsyncHttpxClientMixin):
-    pass
+from langchain_nvidia_ai_endpoints.openapi.openai import OpenAIMixin, SyncOpenAI, AsyncOpenAI
 
 
 class ChatOpenAI(OpenAIMixin, ChatOpenAPI):
@@ -103,7 +52,7 @@ class ChatOpenAI(OpenAIMixin, ChatOpenAPI):
 
     @property
     def lc_secrets(self) -> Dict[str, str]:
-        return {"openai_api_key": "OPENAI_API_KEY"}
+        return {"api_key": "OPENAI_API_KEY"}
 
     @classmethod
     def get_lc_namespace(cls) -> List[str]:
@@ -111,8 +60,8 @@ class ChatOpenAI(OpenAIMixin, ChatOpenAPI):
         return ["langchain", "chat_models", "openai"]
 
     @classmethod
-    def get_client_classes(self):
-        return OpenAI, AsyncOpenAI
+    def get_client_classes(cls):
+        return SyncOpenAI, AsyncOpenAI
 
     def _get_encoding_model(self) -> Tuple[str, tiktoken.Encoding]:
         if self.tiktoken_model_name is not None:
