@@ -58,7 +58,7 @@ class NVIDIAMixin:
             kws.get("base_url")
             or os.environ.get("NVIDIA_BASE_URL")
             or os.environ.get("NVIDIA_API_BASE")
-            or "https://api.nvidia.com/v1"
+            or "https://integrate.api.nvidia.com/v1"
         )
 
         kws["proxy"] = (
